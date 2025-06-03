@@ -44,6 +44,6 @@ def analyze():
 # Dacă rulăm acest fișier direct (nu îl importăm în alt fișier), pornim serverul
 if __name__ == "__main__":
     # Pe Railway, PORT-ul este oferit printr-o variabilă de mediu
-    port = int(os.environ.get("PORT", 5000))  # dacă nu există, folosim 5000 local
+    port = int(os.environ.get("PORT", 3000))  # dacă nu există, folosim 5000 local
     # Pornim serverul pe 0.0.0.0 ca să fie vizibil din exterior
     app.run(host="0.0.0.0", port=port)
