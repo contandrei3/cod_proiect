@@ -198,10 +198,9 @@ def analyze_url(url: str) -> dict:
                     else:
                         pop_main_part = pop_dom_full # Fallback pentru TLD-uri simple sau domenii fără puncte
 
-                    # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                     if decoded_domain_for_check != pop_dom_full and \
                        len(pop_main_part) > 3 and \
-                       levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 1: # Schimbat de la <= 2 la <= 1
+                       levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 1:
                         score += SCORE_DOMAIN_SIMILARITY
                         reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
                         break # O singură potrivire este suficientă
@@ -225,7 +224,7 @@ def analyze_url(url: str) -> dict:
             current_root_domain = original_domain
             current_main_domain_part = original_domain
         
-        # --- NOUA LOGICĂ pentru Typosquatting ---
+        # NOUA LOGICĂ pentru Typosquatting
         # Verificăm typosquatting doar dacă main_domain_part are mai mult de 3 litere
         if len(current_main_domain_part) > 3:
             for typo, correction in COMMON_TYPOS.items():
@@ -241,16 +240,15 @@ def analyze_url(url: str) -> dict:
                         else:
                             pop_main_domain = pop_dom_full # Fallback
                         
-                        # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                         if temp_main_domain != pop_main_domain and \
-                           levenshtein_distance(temp_main_domain, pop_main_domain) <= 1: # Rămâne <= 1
+                           levenshtein_distance(temp_main_domain, pop_main_domain) <= 1:
                             score += SCORE_TYPOSQUATTING
                             reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_main_domain_part}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
                             break # O singură potrivire este suficientă
                     if any("typosquatting" in r for r in reasons):
                         break
 
-        # --- NOUA LOGICĂ pentru Similaritate Levenshtein (pentru domenii fără homograf IDN) ---
+        # NOUA LOGICĂ pentru Similaritate Levenshtein (pentru domenii fără homograf IDN)
         # Această verificare se aplică pe `current_main_domain_part` (care e de obicei Punycode sau ASCII)
         # Verificăm similaritatea doar dacă main_domain_part are mai mult de 3 litere
         if len(current_main_domain_part) > 3:
@@ -263,9 +261,8 @@ def analyze_url(url: str) -> dict:
                 else:
                     pop_main_domain = pop_dom_full
 
-                # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                 if current_main_domain_part != pop_main_domain and \
-                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 1: # Schimbat de la <= 2 la <= 1
+                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 1:
                     score += SCORE_DOMAIN_SIMILARITY
                     reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_main_domain_part}' seamănă foarte bine cu '{pop_dom_full}'.")
                     break # O singură potrivire este suficientă
@@ -281,9 +278,15 @@ def analyze_url(url: str) -> dict:
         score += SCORE_DNS_FAIL
         reasons.append(f"Scor +{SCORE_DNS_FAIL}: Eroare la rezolvarea DNS: {e}.")
 
+    # Inițializăm final_scheme cu original_scheme pentru a evita "referenced before assignment"
+    final_scheme = original_scheme 
     final_url = url
+    final_domain = original_domain # Inițializăm și final_domain
+
     try:
-        response = requests.head(url, allow_redirects=True, timeout=5)
+        # Adăugăm un User-Agent pentru a preveni blocarea de către servere mari
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+        response = requests.head(url, allow_redirects=True, timeout=5, headers=headers)
         final_url = response.url
         final_parsed = urlparse(final_url.lower())
         final_domain = final_parsed.netloc
@@ -292,18 +295,24 @@ def analyze_url(url: str) -> dict:
         if original_scheme == 'http' and final_scheme == 'https':
             reasons.append("Redirecționat de la HTTP la HTTPS.")
         elif original_scheme == 'http' and final_scheme == 'http':
+            # Aplicăm penalizarea doar dacă nu este un domeniu popular și a rămas pe HTTP
             if not is_known_popular_domain:
                 score += SCORE_INVALID_SSL
                 reasons.append(f"Scor +{SCORE_INVALID_SSL}: URL HTTP nu a redirecționat la HTTPS.")
 
     except requests.exceptions.RequestException as e:
+        # Dacă requests.head() eșuează, schemele și domeniile rămân la valorile inițiale
         score += SCORE_INVALID_SSL
         reasons.append(f"Scor +{SCORE_INVALID_SSL}: Conexiune HTTP/HTTPS eșuată sau eroare la redirecționare: {e}.")
-        final_domain = original_domain
+        # final_domain și final_scheme rămân la original_domain/original_scheme, ceea ce e corect aici.
 
+    # Verificarea SSL se face ACUM doar dacă URL-ul final este HTTPS
+    # final_scheme este acum garantat să aibă o valoare
     if 'https' == final_scheme:
         try:
             context = ssl.create_default_context()
+            # Conexiunea SSL ar trebui să folosească domeniul exact (Punycode dacă e cazul)
+            # Folosim final_domain pentru că URL-ul ar fi putut fi redirecționat
             with socket.create_connection((final_domain, 443), timeout=3) as sock:
                 with context.wrap_socket(sock, server_hostname=final_domain) as ssock:
                     cert = ssock.getpeercert()
@@ -320,6 +329,7 @@ def analyze_url(url: str) -> dict:
                 score += SCORE_INVALID_SSL
                 reasons.append(f"Scor +{SCORE_INVALID_SSL}: Eroare la verificarea SSL: {e}.")
     elif 'http' == final_scheme:
+        # Această adăugare de motiv este utilă chiar și pentru domenii populare care rămân HTTP
         reasons.append("URL-ul final este HTTP (nesecurizat).")
 
     # Scor final
@@ -337,44 +347,3 @@ def analyze_url(url: str) -> dict:
         "nivel_risc": risk_level,
         "detalii": reasons
     }
-
-# Exemplu de utilizare:
-if __name__ == "__main__":
-    test_urls = [
-        "https://www.google.com",
-        "https://bcr.com",                 # Ar trebui să aibă scor scăzut acum
-        "https://brd.ro",                  # Ar trebui să aibă scor scăzut
-        "https://aapl.com",                # Domeniu scurt, similaritate nu ar trebui să se aplice
-        "https://abc.com",                 # Domeniu scurt, similaritate nu ar trebui să se aplice
-        "https://emag.com",                # Acum nu ar trebui să mai semene cu ebay.com
-        "http://phishing-site.example.com@bad.com/login",
-        "https://www.sub.sub.sub.sub.sub.sub.bank.com",
-        "http://faceb0ok-login.com",
-        "https://аpple.com",
-        "https://paypal.com",
-        "http://192.168.1.1/admin",
-        "https://www.facebook.com/login.php?next=https://www.facebook.com/",
-        "https://accounts.google.com/signin/v2/sl/pwd?flowName=GlifWebSignIn&flowEntry=ServiceLogin",
-        "http://amazon.tk/login.php",
-        "https://appIe.com",
-        "https://microsoft.support.login.com",
-        "https://www.rnicrosoft.com",
-        "http://valid-site.com",
-        "https://google.com/login",
-        "https://xn--pple-43da.com",
-        "https://www.bank-of-america.com",
-        "https://www.bt.ro/clienti-persoane-fizice/conturi/",
-        "https://revolut.com/app/login",
-        "https://login.roblox.com",
-        "https://emag.ro/contul-meu/login",
-        "https://support.apple.com"
-    ]
-
-    print("--- Analiza URL-urilor ---")
-    for u in test_urls:
-        result = analyze_url(u)
-        print(f"\nURL: {result['url']}")
-        print(f"Scor: {result['scor']}")
-        print(f"Nivel de risc: {result['nivel_risc']}")
-        for detail in result['detalii']:
-            print(f"  - {detail}")
