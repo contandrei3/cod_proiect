@@ -2,9 +2,8 @@ import re
 from urllib.parse import urlparse
 import socket
 import ssl
-# import whois # Păstrăm comentat conform discuției anterioare
 from datetime import datetime
-import idna # Reintroducem idna
+import idna
 from Levenshtein import distance as levenshtein_distance
 import requests
 
@@ -38,22 +37,83 @@ def analyze_url(url: str) -> dict:
 
     # Liste predefinite
     FREE_TLDS = {'.tk', '.ml', '.ga', '.cf', '.gq'}
-    SUSPICIOUS_KEYWORDS = ['login', 'secure', 'update', 'verify', 'account', 'bank', 'confirm', 'reset', 'password', 'webmail', 'support', 'admin']
+    SUSPICIOUS_KEYWORDS = ['login', 'secure', 'update', 'verify', 'account', 'bank', 'confirm', 'reset', 'password', 'webmail', 'support', 'admin', 'client', 'serviciu', 'asistenta', 'card', 'tranzactie', 'plateste']
     COMMON_TYPOS = {
         'rn': 'm', 'cl': 'd', 'll': 'l', 'o0': 'oo', 'pa': 'pp',
         'i': 'l', '1': 'l', '0': 'o', 'gooogle': 'google', 'go0gle': 'google',
-        'yah0o': 'yahoo', 'amzon': 'amazon', 'appple': 'apple'
+        'yah0o': 'yahoo', 'amzon': 'amazon', 'appple': 'apple',
+        'facebok': 'facebook', 'twiter': 'twitter', 'youtub': 'youtube',
+        'instgram': 'instagram', 'amaz0n': 'amazon', 'microsft': 'microsoft',
+        'paypai': 'paypal', 'revoIut': 'revolut', 'roblox': 'roblox',
+        'stean': 'steam', 'epigames': 'epicgames', 'blizzardd': 'blizzard',
+        'disc0rd': 'discord', 'telegramm': 'telegram', 'whatsap': 'whatsapp',
+        'snapcht': 'snapchat', 'tiktokk': 'tiktok', 'gmaiI': 'gmail',
+        'outIook': 'outlook', 'bcrr': 'bcr', 'brdd': 'brd',
+        'ingg': 'ing', 'btbank': 'bancatransilvania', 'cecbanc': 'cec.ro',
+        'emagg': 'emag', 'altexx': 'altex'
     }
 
+    # LISTA EXTINSĂ DE POPULAR_DOMAINS
     POPULAR_DOMAINS = [
-        'google.com', 'facebook.com', 'youtube.com', 'amazon.com', 'microsoft.com',
-        'apple.com', 'paypal.com', 'ebay.com', 'netflix.com', 'wikipedia.org',
-        'twitter.com', 'linkedin.com', 'instagram.com', 'bing.com', 'yahoo.com',
-        'reddit.com', 'twitch.tv', 'cloudflare.com', 'github.com', 'adobe.com',
-        'emag.ro', 'olx.ro', 'bancatransilvania.ro', 'brd.ro',
-        'ing.ro', 'cec.ro', 'bt.ro', 'digi.ro', 'orange.ro', 'vodafone.ro',
-        'telekom.ro', 'anpc.ro', 'anaf.ro', 'gov.ro', 'mail.google.com',
-        'drive.google.com', 'outlook.live.com', 'mail.yahoo.com', 'ro.wikipedia.org'
+        # Motoare de căutare / General
+        'google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'yandex.com',
+
+        # Social Media
+        'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com',
+        'reddit.com', 'tiktok.com', 'snapchat.com', 'pinterest.com', 'tumblr.com',
+        'discord.com', 'telegram.org', 'whatsapp.com', 'wechat.com', 'vk.com',
+        'threads.net',
+
+        # E-mail
+        'gmail.com', 'outlook.live.com', 'mail.yahoo.com', 'aol.com', 'protonmail.com',
+        'icloud.com', 'mail.ru',
+
+        # Servicii Cloud / Productivitate
+        'microsoft.com', 'office.com', 'onedrive.live.com', 'sharepoint.com',
+        'apple.com', 'icloud.com', 'drive.google.com', 'docs.google.com',
+        'dropbox.com', 'drive.google.com', 'mega.nz', 'wetransfer.com',
+        'zoom.us', 'webex.com', 'slack.com', 'teams.microsoft.com',
+
+        # Bănci România
+        'bancatransilvania.ro', 'bt.ro', 'brd.ro', 'ing.ro', 'bcr.ro', 'raiffeisen.ro',
+        'cec.ro', 'unicredit.ro', 'otpbank.ro', 'firstbank.ro', 'alpha.ro',
+        'libra.ro', 'patria.ro', 'garantibank.ro', 'eximbank.ro', 'idea-bank.ro',
+
+        # Bănci Internaționale / Fintech
+        'paypal.com', 'revolut.com', 'wise.com', 'n26.com', 'monzo.com',
+        'jp morgan.com', 'bankofamerica.com', 'citibank.com', 'wellsfargo.com',
+        'hsbc.com', 'deutsche-bank.com', 'barclays.com', 'credit-agricole.com',
+
+        # E-commerce / Retail
+        'amazon.com', 'ebay.com', 'aliexpress.com', 'alibaba.com', 'etsy.com',
+        'olx.ro', 'emag.ro', 'altex.ro', 'flanco.ro', 'dedeman.ro', 'leroymerlin.ro',
+        'lidl.ro', 'kaufland.ro', 'carrefour.ro', 'auchan.ro',
+
+        # Jocuri / Divertisment
+        'youtube.com', 'netflix.com', 'hbo.com', 'disneyplus.com', 'spotify.com',
+        'steam.com', 'steampowered.com', 'epicgames.com', 'roblox.com', 'riotgames.com',
+        'blizzard.com', 'ea.com', 'ubisoft.com', 'nintendo.com', 'playstation.com',
+        'xbox.com', 'twitch.tv', 'discordapp.com', 'minecraft.net',
+
+        # Telecom România
+        'digi.ro', 'orange.ro', 'vodafone.ro', 'telekom.ro',
+
+        # Instituții Publice România
+        'anaf.ro', 'anpc.ro', 'gov.ro', 'politiaromana.ro', 'just.ro', 'mfinante.gov.ro',
+        'cnas.ro',
+
+        # Altele, inclusiv companii mari unde se fură conturi
+        'googleusercontent.com', # Foarte important pentru phishing cu documente/imagini găzduite
+        'drive.google.com', # pentru fișiere google
+        'cloudflare.com', 'github.com', 'adobe.com', 'valvesoftware.com',
+        'booking.com', 'airbnb.com', 'tripadvisor.com', 'ryanair.com', 'wizzair.com',
+        'booking.com', 'cezar.ro', 'betano.ro', 'superbet.ro', # Site-uri de pariuri, frecvent țintite
+        'okx.com', 'binance.com', 'coinbase.com', 'kraken.com', # Exchange-uri crypto, frecvent țintite
+        'metamask.io', 'trustwallet.com', # Portofele crypto, frecvent țintite
+        'amazon.co.uk', 'amazon.de', 'amazon.fr', 'amazon.it', 'amazon.es', # Extindere Amazon pe TLD-uri populare
+        'microsoftonline.com', 'live.com', 'azurewebsites.net', # Extindere Microsoft
+        'docs.microsoft.com', 'support.microsoft.com',
+        'account.microsoft.com', 'id.apple.com', 'accounts.google.com', 'myaccount.google.com'
     ]
 
     # Parsăm URL-ul inițial
@@ -64,7 +124,11 @@ def analyze_url(url: str) -> dict:
 
     # Extragem domeniul rădăcină al URL-ului analizat (fără Punycode inițial)
     domain_parts = original_domain.split('.')
-    if len(domain_parts) >= 2:
+    # Asigurăm că obținem domeniul rădăcină corect (ex: pentru "www.example.com" -> "example.com")
+    # și tratăm cazurile în care TLD-ul este compus (ex: ".co.uk")
+    if len(domain_parts) >= 3 and domain_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(domain_parts[-1]) == 2: # heuristic for 2-part TLDs
+        root_domain = '.'.join(domain_parts[-3:])
+    elif len(domain_parts) >= 2:
         root_domain = '.'.join(domain_parts[-2:])
     else:
         root_domain = original_domain
@@ -75,9 +139,14 @@ def analyze_url(url: str) -> dict:
     popular_root_domains_set = set()
     for pd in POPULAR_DOMAINS:
         pd_parts = pd.split('.')
-        if len(pd_parts) >= 2:
+        # Adăugăm domeniul complet
+        popular_root_domains_set.add(pd)
+        # Încercăm să adăugăm root_domain-ul corespunzător
+        if len(pd_parts) >= 3 and pd_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pd_parts[-1]) == 2:
+            popular_root_domains_set.add('.'.join(pd_parts[-3:]))
+        elif len(pd_parts) >= 2:
             popular_root_domains_set.add('.'.join(pd_parts[-2:]))
-        popular_root_domains_set.add(pd) # Adăugăm și varianta completă pentru potriviri exacte de subdomeniu
+
 
     is_known_popular_domain = False
     # Verificăm potrivirea exactă a domeniului original (nu decodat încă)
@@ -112,7 +181,7 @@ def analyze_url(url: str) -> dict:
             score += SCORE_IP_ADDRESS
             reasons.append(f"Scor +{SCORE_IP_ADDRESS}: IP în loc de domeniu.")
 
-        # --- NOU: Verificarea caracterelor chirilice/internaționale folosind IDNA decode ---
+        # --- Verificarea caracterelor chirilice/internaționale folosind IDNA decode ---
         decoded_domain_for_check = original_domain
         try:
             # Încercăm să decodăm numele de domeniu. Dacă e Punycode, se va decoda.
@@ -120,17 +189,23 @@ def analyze_url(url: str) -> dict:
             decoded_domain_for_check = idna.decode(original_domain)
             
             # Verificăm dacă domeniul decodat conține caractere non-ASCII (e.g., chirilice)
-            # Aceasta e noua logică pentru a prinde direct homografele vizuale
             if any(ord(c) > 127 for c in decoded_domain_for_check):
                 score += SCORE_CYRILLIC_HOMOGRAPH
                 reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniul conține caractere non-ASCII/internaționale (posibil homograf).")
 
                 # Acum comparăm domeniul decodat cu domenii populare
                 for pop_dom_full in POPULAR_DOMAINS:
-                    pop_root_for_comparison = pop_dom_full.split('.')[-2] if len(pop_dom_full.split('.')) >= 2 else pop_dom_full
+                    pop_root_for_comparison_parts = pop_dom_full.split('.')
+                    if len(pop_root_for_comparison_parts) >= 3 and pop_root_for_comparison_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_for_comparison_parts[-1]) == 2:
+                        pop_root_for_comparison = '.'.join(pop_root_for_comparison_parts[-3:])
+                    elif len(pop_root_for_comparison_parts) >= 2:
+                        pop_root_for_comparison = '.'.join(pop_root_for_comparison_parts[-2:])
+                    else:
+                        pop_root_for_comparison = pop_dom_full
+
                     # Comparăm cu root_domain-ul popular, dar și cu domeniul complet popular
-                    if levenshtein_distance(decoded_domain_for_check, pop_root_for_comparison) <= 2 or \
-                       levenshtein_distance(decoded_domain_for_check, pop_dom_full) <= 2:
+                    if (levenshtein_distance(decoded_domain_for_check, pop_root_for_comparison) <= 2 and decoded_domain_for_check != pop_root_for_comparison) or \
+                       (levenshtein_distance(decoded_domain_for_check, pop_dom_full) <= 2 and decoded_domain_for_check != pop_dom_full):
                         score += SCORE_DOMAIN_SIMILARITY
                         reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
                         break # O singură potrivire este suficientă
@@ -148,16 +223,30 @@ def analyze_url(url: str) -> dict:
 
         # Verificări Typosquatting și similaritate Levenshtein
         # Acestea se fac pe domeniul rădăcină, care ar trebui să fie ASCII (sau Punycode decodat)
-        current_root_domain = domain_parts[-2] if len(domain_parts) >= 2 else original_domain
+        current_root_domain_parts = original_domain.split('.')
+        if len(current_root_domain_parts) >= 3 and current_root_domain_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(current_root_domain_parts[-1]) == 2:
+            current_root_domain = '.'.join(current_root_domain_parts[-3:])
+        elif len(current_root_domain_parts) >= 2:
+            current_root_domain = '.'.join(current_root_domain_parts[-2:])
+        else:
+            current_root_domain = original_domain
         
         for typo, correction in COMMON_TYPOS.items():
             if typo in current_root_domain:
                 temp_domain = current_root_domain.replace(typo, correction)
                 for pop_dom_full in POPULAR_DOMAINS:
-                    pop_root = pop_dom_full.split('.')[-2] if len(pop_dom_full.split('.')) >= 2 else pop_dom_full
-                    if levenshtein_distance(temp_domain, pop_root) <= 1:
+                    pop_root_parts = pop_dom_full.split('.')
+                    if len(pop_root_parts) >= 3 and pop_root_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_parts[-1]) == 2:
+                        pop_root = '.'.join(pop_root_parts[-3:])
+                    elif len(pop_root_parts) >= 2:
+                        pop_root = '.'.join(pop_root_parts[-2:])
+                    else:
+                        pop_root = pop_dom_full
+                    
+                    if (levenshtein_distance(temp_domain, pop_root) <= 1 and temp_domain != pop_root) or \
+                       (levenshtein_distance(temp_domain, pop_dom_full) <= 1 and temp_domain != pop_dom_full):
                         score += SCORE_TYPOSQUATTING
-                        reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_root_domain}' ar putea fi '{correction}' (similar cu '{pop_root}').")
+                        reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_root_domain}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
                         break
                 if any("typosquatting" in r for r in reasons):
                     break
@@ -165,10 +254,18 @@ def analyze_url(url: str) -> dict:
         # Această verificare Levenshtein se aplică pe `current_root_domain` (care e de obicei Punycode sau ASCII)
         # Comparatia cu `decoded_domain_for_check` se face deja mai sus
         for pop_dom_full in POPULAR_DOMAINS:
-            pop_root = pop_dom_full.split('.')[-2] if len(pop_dom_full.split('.')) >= 2 else pop_dom_full
-            if levenshtein_distance(current_root_domain, pop_root) <= 2 and current_root_domain != pop_root:
+            pop_root_parts = pop_dom_full.split('.')
+            if len(pop_root_parts) >= 3 and pop_root_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_parts[-1]) == 2:
+                pop_root = '.'.join(pop_root_parts[-3:])
+            elif len(pop_root_parts) >= 2:
+                pop_root = '.'.join(pop_root_parts[-2:])
+            else:
+                pop_root = pop_dom_full
+
+            if (levenshtein_distance(current_root_domain, pop_root) <= 2 and current_root_domain != pop_root) or \
+               (levenshtein_distance(current_root_domain, pop_dom_full) <= 2 and current_root_domain != pop_dom_full):
                 score += SCORE_DOMAIN_SIMILARITY
-                reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_root_domain}' seamănă foarte bine cu '{pop_root}'.")
+                reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_root_domain}' seamănă foarte bine cu '{pop_dom_full}'.")
                 break
 
     # --- Verificări de conectivitate și certificat (se aplică întotdeauna) ---
@@ -270,7 +367,13 @@ if __name__ == "__main__":
         "http://valid-site.com",
         "https://google.com/login",
         "https://xn--pple-43da.com",              # Punycode pentru аpple.com
-        "https://www.bank-of-america.com"         # Exemplu de domeniu legitim cu cratimă
+        "https://www.bank-of-america.com",        # Exemplu de domeniu legitim cu cratimă
+        "https://bcr.com",                        # Noul exemplu testat
+        "https://www.bt.ro/clienti-persoane-fizice/conturi/", # Un URL mai complex pentru BT
+        "https://revolut.com/app/login",          # Revolut login
+        "https://login.roblox.com",               # Roblox login
+        "https://emag.ro/contul-meu/login",       # Emag login
+        "https://support.apple.com"               # Subdomeniu pentru support Apple
     ]
 
     print("--- Analiza URL-urilor ---")
