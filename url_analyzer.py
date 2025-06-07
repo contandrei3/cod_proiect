@@ -107,7 +107,7 @@ def analyze_url(url: str) -> dict:
         'drive.google.com', # pentru fișiere google
         'cloudflare.com', 'github.com', 'adobe.com', 'valvesoftware.com',
         'booking.com', 'airbnb.com', 'tripadvisor.com', 'ryanair.com', 'wizzair.com',
-        'booking.com', 'cezar.ro', 'betano.ro', 'superbet.ro', # Site-uri de pariuri, frecvent țintite
+        'cezar.ro', 'betano.ro', 'superbet.ro', # Site-uri de pariuri, frecvent țintite
         'okx.com', 'binance.com', 'coinbase.com', 'kraken.com', # Exchange-uri crypto, frecvent țintite
         'metamask.io', 'trustwallet.com', # Portofele crypto, frecvent țintite
         'amazon.co.uk', 'amazon.de', 'amazon.fr', 'amazon.it', 'amazon.es', # Extindere Amazon pe TLD-uri populare
@@ -128,28 +128,25 @@ def analyze_url(url: str) -> dict:
     # și tratăm cazurile în care TLD-ul este compus (ex: ".co.uk")
     if len(domain_parts) >= 3 and domain_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(domain_parts[-1]) == 2: # heuristic for 2-part TLDs
         root_domain = '.'.join(domain_parts[-3:])
+        main_domain_part = domain_parts[-3] # ex: for "example.co.uk", this is "example"
     elif len(domain_parts) >= 2:
         root_domain = '.'.join(domain_parts[-2:])
+        main_domain_part = domain_parts[-2] # ex: for "example.com", this is "example"
     else:
         root_domain = original_domain
+        main_domain_part = original_domain
 
     # --- VERIFICARE CRITICĂ: URL-ul este un domeniu popular și cunoscut? ---
-    # Convertim domeniile populare în formatul root_domain pentru comparație
-    # și adăugăm și original_domain pentru potriviri exacte, inclusiv subdomenii specifice
     popular_root_domains_set = set()
     for pd in POPULAR_DOMAINS:
         pd_parts = pd.split('.')
-        # Adăugăm domeniul complet
-        popular_root_domains_set.add(pd)
-        # Încercăm să adăugăm root_domain-ul corespunzător
+        popular_root_domains_set.add(pd) # Adăugăm domeniul complet
         if len(pd_parts) >= 3 and pd_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pd_parts[-1]) == 2:
             popular_root_domains_set.add('.'.join(pd_parts[-3:]))
         elif len(pd_parts) >= 2:
             popular_root_domains_set.add('.'.join(pd_parts[-2:]))
 
-
     is_known_popular_domain = False
-    # Verificăm potrivirea exactă a domeniului original (nu decodat încă)
     if original_domain in popular_root_domains_set or root_domain in popular_root_domains_set:
         is_known_popular_domain = True
         reasons.append("Acesta este un domeniu cunoscut și popular. Nu se aplică penalizări de scor direct.")
@@ -184,96 +181,97 @@ def analyze_url(url: str) -> dict:
         # --- Verificarea caracterelor chirilice/internaționale folosind IDNA decode ---
         decoded_domain_for_check = original_domain
         try:
-            # Încercăm să decodăm numele de domeniu. Dacă e Punycode, se va decoda.
-            # Dacă sunt caractere non-ASCII directe (ex: "аpple.com"), idna.decode le va lăsa așa.
             decoded_domain_for_check = idna.decode(original_domain)
             
-            # Verificăm dacă domeniul decodat conține caractere non-ASCII (e.g., chirilice)
             if any(ord(c) > 127 for c in decoded_domain_for_check):
                 score += SCORE_CYRILLIC_HOMOGRAPH
                 reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniul conține caractere non-ASCII/internaționale (posibil homograf).")
 
                 # Acum comparăm domeniul decodat cu domenii populare
                 for pop_dom_full in POPULAR_DOMAINS:
-                    pop_root_for_comparison_parts = pop_dom_full.split('.')
-                    if len(pop_root_for_comparison_parts) >= 3 and pop_root_for_comparison_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_for_comparison_parts[-1]) == 2:
-                        pop_root_for_comparison = '.'.join(pop_root_for_comparison_parts[-3:])
-                    elif len(pop_root_for_comparison_parts) >= 2:
-                        pop_root_for_comparison = '.'.join(pop_root_for_comparison_parts[-2:])
+                    # Extragem main_domain_part pentru comparație și pentru a exclude cazurile scurte
+                    pop_dom_parts = pop_dom_full.split('.')
+                    if len(pop_dom_parts) >= 3 and pop_dom_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_dom_parts[-1]) == 2:
+                        pop_main_part = pop_dom_parts[-3]
+                    elif len(pop_dom_parts) >= 2:
+                        pop_main_part = pop_dom_parts[-2]
                     else:
-                        pop_root_for_comparison = pop_dom_full
+                        pop_main_part = pop_dom_full # Fallback pentru TLD-uri simple sau domenii fără puncte
 
-                    # Comparăm cu root_domain-ul popular, dar și cu domeniul complet popular
-                    if (levenshtein_distance(decoded_domain_for_check, pop_root_for_comparison) <= 2 and decoded_domain_for_check != pop_root_for_comparison) or \
-                       (levenshtein_distance(decoded_domain_for_check, pop_dom_full) <= 2 and decoded_domain_for_check != pop_dom_full):
+                    # --- NOUA LOGICĂ: NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
+                    # Asigurăm că nu este același domeniu și că main_domain_part este suficient de lungă
+                    if decoded_domain_for_check != pop_dom_full and \
+                       len(pop_main_part) > 3 and \
+                       levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 2:
                         score += SCORE_DOMAIN_SIMILARITY
                         reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
                         break # O singură potrivire este suficientă
 
         except idna.IDNAError:
-            # Aceasta înseamnă că domeniul este Punycode, dar nu este un IDN valid.
-            # Sau conține caractere non-ASCII care nu pot fi interpretate ca IDN.
-            # Îl tratăm ca suspect.
-            score += SCORE_CYRILLIC_HOMOGRAPH # Sau un scor dedicat pentru IDNA invalid
+            score += SCORE_CYRILLIC_HOMOGRAPH
             reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniu cu format IDN invalid sau caractere non-ASCII ce nu pot fi decodate.")
         except Exception as e:
-            # Alte erori la decodare, le logăm/raportăm
             reasons.append(f"Atenție: Eroare la decodarea IDN: {e}. Continuăm analiza.")
 
 
-        # Verificări Typosquatting și similaritate Levenshtein
-        # Acestea se fac pe domeniul rădăcină, care ar trebui să fie ASCII (sau Punycode decodat)
+        # Verificări Typosquatting și similaritate Levenshtein pe domeniul (posibil) Punycode
         current_root_domain_parts = original_domain.split('.')
         if len(current_root_domain_parts) >= 3 and current_root_domain_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(current_root_domain_parts[-1]) == 2:
             current_root_domain = '.'.join(current_root_domain_parts[-3:])
+            current_main_domain_part = current_root_domain_parts[-3]
         elif len(current_root_domain_parts) >= 2:
             current_root_domain = '.'.join(current_root_domain_parts[-2:])
+            current_main_domain_part = current_root_domain_parts[-2]
         else:
             current_root_domain = original_domain
+            current_main_domain_part = original_domain
         
-        for typo, correction in COMMON_TYPOS.items():
-            if typo in current_root_domain:
-                temp_domain = current_root_domain.replace(typo, correction)
-                for pop_dom_full in POPULAR_DOMAINS:
-                    pop_root_parts = pop_dom_full.split('.')
-                    if len(pop_root_parts) >= 3 and pop_root_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_parts[-1]) == 2:
-                        pop_root = '.'.join(pop_root_parts[-3:])
-                    elif len(pop_root_parts) >= 2:
-                        pop_root = '.'.join(pop_root_parts[-2:])
-                    else:
-                        pop_root = pop_dom_full
-                    
-                    if (levenshtein_distance(temp_domain, pop_root) <= 1 and temp_domain != pop_root) or \
-                       (levenshtein_distance(temp_domain, pop_dom_full) <= 1 and temp_domain != pop_dom_full):
-                        score += SCORE_TYPOSQUATTING
-                        reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_root_domain}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
+        # --- NOUA LOGICĂ pentru Typosquatting ---
+        # Verificăm typosquatting doar dacă main_domain_part are mai mult de 3 litere
+        if len(current_main_domain_part) > 3:
+            for typo, correction in COMMON_TYPOS.items():
+                # Aplicăm corecția pe main_domain_part pentru o comparație mai precisă
+                if typo in current_main_domain_part:
+                    temp_main_domain = current_main_domain_part.replace(typo, correction)
+                    for pop_dom_full in POPULAR_DOMAINS:
+                        pop_main_parts = pop_dom_full.split('.')
+                        if len(pop_main_parts) >= 3 and pop_main_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_main_parts[-1]) == 2:
+                            pop_main_domain = pop_main_parts[-3]
+                        elif len(pop_main_parts) >= 2:
+                            pop_main_domain = pop_main_parts[-2]
+                        else:
+                            pop_main_domain = pop_dom_full # Fallback
+                        
+                        # --- NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
+                        if temp_main_domain != pop_main_domain and \
+                           levenshtein_distance(temp_main_domain, pop_main_domain) <= 1:
+                            score += SCORE_TYPOSQUATTING
+                            reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_main_domain_part}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
+                            break # O singură potrivire este suficientă
+                    if any("typosquatting" in r for r in reasons):
                         break
-                if any("typosquatting" in r for r in reasons):
-                    break
 
-        # Această verificare Levenshtein se aplică pe `current_root_domain` (care e de obicei Punycode sau ASCII)
-        # Comparatia cu `decoded_domain_for_check` se face deja mai sus
-        for pop_dom_full in POPULAR_DOMAINS:
-            pop_root_parts = pop_dom_full.split('.')
-            if len(pop_root_parts) >= 3 and pop_root_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_root_parts[-1]) == 2:
-                pop_root = '.'.join(pop_root_parts[-3:])
-            elif len(pop_root_parts) >= 2:
-                pop_root = '.'.join(pop_root_parts[-2:])
-            else:
-                pop_root = pop_dom_full
+        # --- NOUA LOGICĂ pentru Similaritate Levenshtein (pentru domenii fără homograf IDN) ---
+        # Această verificare se aplică pe `current_main_domain_part` (care e de obicei Punycode sau ASCII)
+        # Verificăm similaritatea doar dacă main_domain_part are mai mult de 3 litere
+        if len(current_main_domain_part) > 3:
+            for pop_dom_full in POPULAR_DOMAINS:
+                pop_main_parts = pop_dom_full.split('.')
+                if len(pop_main_parts) >= 3 and pop_main_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_main_parts[-1]) == 2:
+                    pop_main_domain = pop_main_parts[-3]
+                elif len(pop_main_parts) >= 2:
+                    pop_main_domain = pop_main_parts[-2]
+                else:
+                    pop_main_domain = pop_dom_full
 
-            if (levenshtein_distance(current_root_domain, pop_root) <= 2 and current_root_domain != pop_root) or \
-               (levenshtein_distance(current_root_domain, pop_dom_full) <= 2 and current_root_domain != pop_dom_full):
-                score += SCORE_DOMAIN_SIMILARITY
-                reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_root_domain}' seamănă foarte bine cu '{pop_dom_full}'.")
-                break
+                # --- NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
+                if current_main_domain_part != pop_main_domain and \
+                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 2:
+                    score += SCORE_DOMAIN_SIMILARITY
+                    reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_main_domain_part}' seamănă foarte bine cu '{pop_dom_full}'.")
+                    break # O singură potrivire este suficientă
 
     # --- Verificări de conectivitate și certificat (se aplică întotdeauna) ---
-    # Notă: Aici se folosește 'original_domain' pentru lookup DNS și SSL,
-    # deoarece acestea funcționează de obicei cu numele de domeniu așa cum este (chiar și Punycode).
-    # Sistemele DNS și SSL sunt concepute pentru a gestiona IDN-uri convertite în Punycode.
-
-    # DNS Lookup
     try:
         ip = socket.gethostbyname(original_domain)
         reasons.append(f"DNS Rezolvat la IP: {ip}")
@@ -284,14 +282,12 @@ def analyze_url(url: str) -> dict:
         score += SCORE_DNS_FAIL
         reasons.append(f"Scor +{SCORE_DNS_FAIL}: Eroare la rezolvarea DNS: {e}.")
 
-    # Gestionarea redirecționărilor și apoi verificarea SSL
     final_url = url
     try:
-        # Folosim URL-ul original pentru request, deoarece requests va gestiona Punycode intern
         response = requests.head(url, allow_redirects=True, timeout=5)
         final_url = response.url
         final_parsed = urlparse(final_url.lower())
-        final_domain = final_parsed.netloc # Acesta poate fi deja Punycode dacă așa a fost redirecționat
+        final_domain = final_parsed.netloc
         final_scheme = final_parsed.scheme
 
         if original_scheme == 'http' and final_scheme == 'https':
@@ -304,13 +300,11 @@ def analyze_url(url: str) -> dict:
     except requests.exceptions.RequestException as e:
         score += SCORE_INVALID_SSL
         reasons.append(f"Scor +{SCORE_INVALID_SSL}: Conexiune HTTP/HTTPS eșuată sau eroare la redirecționare: {e}.")
-        final_domain = original_domain # Folosim domeniul original dacă redirecționarea a eșuat
+        final_domain = original_domain
 
-    # Verificarea SSL se face ACUM doar dacă URL-ul final este HTTPS
     if 'https' == final_scheme:
         try:
             context = ssl.create_default_context()
-            # Conexiunea SSL ar trebui să folosească domeniul exact (Punycode dacă e cazul)
             with socket.create_connection((final_domain, 443), timeout=3) as sock:
                 with context.wrap_socket(sock, server_hostname=final_domain) as ssock:
                     cert = ssock.getpeercert()
@@ -329,9 +323,6 @@ def analyze_url(url: str) -> dict:
     elif 'http' == final_scheme:
         reasons.append("URL-ul final este HTTP (nesecurizat).")
 
-    # SECȚIUNEA WHOIS (COMENATĂ TEMPORAR) - Rămâne comentată
-    # ... (blocul WHOIS comentat) ...
-
     # Scor final
     final_score = min(score, 100)
 
@@ -342,7 +333,7 @@ def analyze_url(url: str) -> dict:
     )
 
     return {
-        "url": url, # Returnăm URL-ul original
+        "url": url,
         "scor": final_score,
         "nivel_risc": risk_level,
         "detalii": reasons
@@ -352,10 +343,14 @@ def analyze_url(url: str) -> dict:
 if __name__ == "__main__":
     test_urls = [
         "https://www.google.com",
+        "https://bcr.com",                 # Ar trebui să aibă scor scăzut acum
+        "https://brd.ro",                  # Ar trebui să aibă scor scăzut
+        "https://aapl.com",                # Domeniu scurt, similaritate nu ar trebui să se aplice
+        "https://abc.com",                 # Domeniu scurt, similaritate nu ar trebui să se aplice
         "http://phishing-site.example.com@bad.com/login",
         "https://www.sub.sub.sub.sub.sub.sub.bank.com",
         "http://faceb0ok-login.com",
-        "https://аpple.com",                      # URL cu caracter chirilic (a mic)
+        "https://аpple.com",
         "https://paypal.com",
         "http://192.168.1.1/admin",
         "https://www.facebook.com/login.php?next=https://www.facebook.com/",
@@ -366,14 +361,13 @@ if __name__ == "__main__":
         "https://www.rnicrosoft.com",
         "http://valid-site.com",
         "https://google.com/login",
-        "https://xn--pple-43da.com",              # Punycode pentru аpple.com
-        "https://www.bank-of-america.com",        # Exemplu de domeniu legitim cu cratimă
-        "https://bcr.com",                        # Noul exemplu testat
-        "https://www.bt.ro/clienti-persoane-fizice/conturi/", # Un URL mai complex pentru BT
-        "https://revolut.com/app/login",          # Revolut login
-        "https://login.roblox.com",               # Roblox login
-        "https://emag.ro/contul-meu/login",       # Emag login
-        "https://support.apple.com"               # Subdomeniu pentru support Apple
+        "https://xn--pple-43da.com",
+        "https://www.bank-of-america.com",
+        "https://www.bt.ro/clienti-persoane-fizice/conturi/",
+        "https://revolut.com/app/login",
+        "https://login.roblox.com",
+        "https://emag.ro/contul-meu/login",
+        "https://support.apple.com"
     ]
 
     print("--- Analiza URL-urilor ---")
