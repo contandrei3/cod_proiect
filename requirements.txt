@@ -4,3 +4,4 @@ gunicorn
 idna
 python-Levenshtein
 python-whois
+requests
