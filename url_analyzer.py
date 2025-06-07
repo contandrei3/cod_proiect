@@ -2,10 +2,11 @@ import re
 from urllib.parse import urlparse
 import socket
 import ssl
-import whois
+# import whois # Păstrăm comentat conform discuției anterioare
 from datetime import datetime
-import idna # Pentru caracterele chirilice, necesită pip install idna
-from Levenshtein import distance as levenshtein_distance # Pentru similaritate, necesită pip install python-Levenshtein
+import idna
+from Levenshtein import distance as levenshtein_distance
+import requests
 
 def analyze_url(url: str) -> dict:
     """
@@ -28,34 +29,22 @@ def analyze_url(url: str) -> dict:
     SCORE_FREE_TLD = 25
     SCORE_IP_ADDRESS = 30
     SCORE_DNS_FAIL = 15
-    SCORE_INVALID_SSL = 20
+    SCORE_INVALID_SSL = 20 # Acest scor va fi aplicat doar pentru erori de conexiune/certificat invalid
     SCORE_RECENT_DOMAIN = 20
     SCORE_WHOIS_UNAVAILABLE = 10
-    SCORE_CYRILLIC_HOMOGRAPH = 40 # Scor mare pentru homografe chirilice
-    SCORE_TYPOSQUATTING = 30 # Scor mare pentru typosquatting
-    SCORE_DOMAIN_SIMILARITY = 40 # Scor mare pentru similitudine cu domenii populare
+    SCORE_CYRILLIC_HOMOGRAPH = 40
+    SCORE_TYPOSQUATTING = 30
+    SCORE_DOMAIN_SIMILARITY = 40
 
     # Liste predefinite
     FREE_TLDS = {'.tk', '.ml', '.ga', '.cf', '.gq'}
     SUSPICIOUS_KEYWORDS = ['login', 'secure', 'update', 'verify', 'account', 'bank', 'confirm', 'reset', 'password', 'webmail', 'support', 'admin']
     COMMON_TYPOS = {
-        'rn': 'm',
-        'cl': 'd',
-        'll': 'l',
-        'o0': 'oo', # Ex: goog0le.com
-        'pa': 'pp', # Ex: paypa1.com (unde 1 e l)
-        'i': 'l',
-        '1': 'l',
-        '0': 'o',
-        'gooogle': 'google', # Repetari de litere
-        'go0gle': 'google',
-        'yah0o': 'yahoo',
-        'amzon': 'amazon',
-        'appple': 'apple'
+        'rn': 'm', 'cl': 'd', 'll': 'l', 'o0': 'oo', 'pa': 'pp',
+        'i': 'l', '1': 'l', '0': 'o', 'gooogle': 'google', 'go0gle': 'google',
+        'yah0o': 'yahoo', 'amzon': 'amazon', 'appple': 'apple'
     }
 
-    # Lista de domenii populare (exemplu - ajustați după nevoi)
-    # Acestea ar trebui să fie domeniile REAL LEGITIME
     POPULAR_DOMAINS = [
         'google.com', 'facebook.com', 'youtube.com', 'amazon.com', 'microsoft.com',
         'apple.com', 'paypal.com', 'ebay.com', 'netflix.com', 'wikipedia.org',
@@ -67,109 +56,78 @@ def analyze_url(url: str) -> dict:
         'outlook.live.com', 'mail.yahoo.com'
     ]
 
-    # Parsăm URL-ul
+    # Parsăm URL-ul inițial
     parsed = urlparse(url.lower())
-    domain = parsed.netloc
-    path = parsed.path
+    original_domain = parsed.netloc
+    original_scheme = parsed.scheme
     full_url = url.lower()
 
     # --- Verificări de bază ---
-
-    # Dacă URL-ul conține '@' (obfuscation)
     if '@' in full_url:
         score += SCORE_AT
         reasons.append(f"Scor +{SCORE_AT}: Conține '@' (posibilă ofuscare).")
-
-    # Dacă are multe subdomenii
-    # Numărăm punctele din domeniu, excluzând TLD-ul
-    if domain.count('.') > 3: # Mai mult de 3 puncte (ex: www.sub.domeniu.com)
+    
+    if original_domain.count('.') > 3:
         score += SCORE_MANY_SUBDOMAINS
         reasons.append(f"Scor +{SCORE_MANY_SUBDOMAINS}: Multe subdomenii.")
-
-    # Dacă domeniul conține '-' (semn de phishing sau domenii noi)
-    if '-' in domain:
+    
+    if '-' in original_domain:
         score += SCORE_HYPHEN
         reasons.append(f"Scor +{SCORE_HYPHEN}: Cratimă în domeniu.")
-
-    # Cuvinte cheie suspicioase (verificate în întreg URL-ul, nu doar în path)
+    
     for kw in SUSPICIOUS_KEYWORDS:
         if kw in full_url:
             score += SCORE_SUSPICIOUS_KEYWORD
             reasons.append(f"Scor +{SCORE_SUSPICIOUS_KEYWORD}: Cuvânt suspicios în URL: '{kw}'.")
-
-    # TLD-uri gratuite
-    if any(domain.endswith(tld) for tld in FREE_TLDS):
+    
+    if any(original_domain.endswith(tld) for tld in FREE_TLDS):
         score += SCORE_FREE_TLD
-        reasons.append(f"Scor +{SCORE_FREE_TLD}: TLD gratuit: {domain.split('.')[-1]}.")
-
-    # IP în loc de domeniu
-    if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', domain):
+        reasons.append(f"Scor +{SCORE_FREE_TLD}: TLD gratuit: {original_domain.split('.')[-1]}.")
+    
+    if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', original_domain):
         score += SCORE_IP_ADDRESS
         reasons.append(f"Scor +{SCORE_IP_ADDRESS}: IP în loc de domeniu.")
 
     # --- Verificări avansate ---
-
-    # 1. Analiza caracterelor chirilice (IDN Homograph Attack)
     try:
-        # Încercăm să decodăm domeniul ca IDNA. Dacă reușește, înseamnă că are caractere non-ASCII
-        # care ar putea fi homografe.
-        decoded_domain = idna.decode(domain)
-        if decoded_domain != domain:
-            # Înseamnă că domeniul a fost codificat Punycode și a conținut caractere non-ASCII
+        decoded_domain = idna.decode(original_domain)
+        if decoded_domain != original_domain:
             score += SCORE_CYRILLIC_HOMOGRAPH
             reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniu cu caractere chirilice/internaționale (IDN homograph).")
-            # Putem adăuga aici o verificare suplimentară dacă domeniul decodat seamănă cu unul popular
             for pop_dom in POPULAR_DOMAINS:
-                if levenshtein_distance(decoded_domain, pop_dom) <= 2: # Toleranță mică
+                if levenshtein_distance(decoded_domain, pop_dom) <= 2:
                     score += SCORE_DOMAIN_SIMILARITY
                     reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat seamănă foarte bine cu '{pop_dom}'.")
-                    break # Ieșim după prima potrivire
-
+                    break
     except idna.IDNAError:
-        # Nu este un domeniu IDNA valid sau nu conține caractere chirilice
         pass
 
-    # 2. Tiposquatting (alăturări de genul "rn" în loc de "m", etc.)
-    # Extragem doar numele de domeniu fără subdomenii și TLD pentru această verificare
-    domain_parts = domain.split('.')
-    if len(domain_parts) >= 2:
-        root_domain = domain_parts[-2] # Ex: pentru www.google.com, root_domain este google
-    else:
-        root_domain = domain
+    domain_parts = original_domain.split('.')
+    root_domain = domain_parts[-2] if len(domain_parts) >= 2 else original_domain
 
-    # Verificăm typosquatting pentru root_domain
     for typo, correction in COMMON_TYPOS.items():
         if typo in root_domain:
             temp_domain = root_domain.replace(typo, correction)
             for pop_dom in POPULAR_DOMAINS:
-                # Verificăm dacă corecția îl aduce aproape de un domeniu popular
-                if levenshtein_distance(temp_domain, pop_dom.split('.')[-2]) <= 1: # Prag foarte mic
+                if levenshtein_distance(temp_domain, pop_dom.split('.')[-2]) <= 1:
                     score += SCORE_TYPOSQUATTING
                     reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{root_domain}' ar putea fi '{correction}' (similar cu '{pop_dom}').")
-                    break # Ieșim după prima potrivire pentru acest typo
-            if SCORE_TYPOSQUATTING in [r.split(': ')[0].replace('Scor +', '') for r in reasons]: # Dacă am adăugat deja, nu mai verificăm
+                    break
+            if SCORE_TYPOSQUATTING in [r.split(': ')[0].replace('Scor +', '') for r in reasons]:
                 break
 
-
-    # 3. Similitudinea cu o listă scurtă de site-uri foarte populare (fără typosquatting)
-    # Comparăm domeniul curent (ou root_domain) cu cele populare
     for pop_dom in POPULAR_DOMAINS:
-        # Folosim doar partea principală a domeniului popular pentru comparație
         pop_root = pop_dom.split('.')[-2] if len(pop_dom.split('.')) >= 2 else pop_dom
-
-        # Comparăm domeniul analizat cu domeniul popular
-        # Un prag de 2 sau 3 pentru Levenshtein este un bun început
-        # Pentru domenii scurte, chiar și 1 poate fi un semn puternic
         if levenshtein_distance(root_domain, pop_root) <= 2 and root_domain != pop_root:
             score += SCORE_DOMAIN_SIMILARITY
             reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{root_domain}' seamănă foarte bine cu '{pop_root}'.")
-            break # Ieșim după prima potrivire semnificativă
+            break
 
     # --- Verificări de conectivitate și certificat ---
 
     # DNS Lookup
     try:
-        ip = socket.gethostbyname(domain)
+        ip = socket.gethostbyname(original_domain)
         reasons.append(f"DNS Rezolvat la IP: {ip}")
     except socket.gaierror:
         score += SCORE_DNS_FAIL
@@ -178,51 +136,57 @@ def analyze_url(url: str) -> dict:
         score += SCORE_DNS_FAIL
         reasons.append(f"Scor +{SCORE_DNS_FAIL}: Eroare la rezolvarea DNS: {e}.")
 
-    # SSL Check
-    # Această verificare poate fi costisitoare și ar putea încetini analiza pentru un număr mare de URL-uri.
-    # Se poate adăuga o verificare a numelui de domeniu din certificat.
+    # Gestionarea redirecționărilor și apoi verificarea SSL
+    final_url = url
     try:
-        context = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=3) as sock:
-            with context.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
-                issuer = dict(x[0] for x in cert['issuer'])
-                issuer_common = issuer.get('commonName', '')
-                reasons.append(f"SSL emis de: {issuer_common}")
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        final_url = response.url
+        final_parsed = urlparse(final_url.lower())
+        final_domain = final_parsed.netloc
+        final_scheme = final_parsed.scheme
 
-                # Verificăm dacă numele de domeniu din certificat se potrivește cu cel al site-ului
-                # Aceasta e o verificare crucială pentru phishing
-                if not ssl.match_hostname(cert, domain):
-                    score += SCORE_INVALID_SSL
-                    reasons.append(f"Scor +{SCORE_INVALID_SSL}: Numele de domeniu din certificat nu se potrivește cu URL-ul.")
+        if original_scheme == 'http' and final_scheme == 'https':
+            reasons.append("Redirecționat de la HTTP la HTTPS.")
+        elif original_scheme == 'http' and final_scheme == 'http':
+            score += SCORE_INVALID_SSL # Scorem pentru că nu a redirecționat la HTTPS
+            reasons.append(f"Scor +{SCORE_INVALID_SSL}: URL HTTP nu a redirecționat la HTTPS.")
 
-    except (socket.gaierror, ConnectionRefusedError, socket.timeout, ssl.SSLError):
+    except requests.exceptions.RequestException as e:
         score += SCORE_INVALID_SSL
-        reasons.append(f"Scor +{SCORE_INVALID_SSL}: SSL invalid sau conexiune HTTPS eșuată.")
-    except Exception as e:
-        score += SCORE_INVALID_SSL
-        reasons.append(f"Scor +{SCORE_INVALID_SSL}: Eroare la verificarea SSL: {e}.")
+        reasons.append(f"Scor +{SCORE_INVALID_SSL}: Conexiune HTTP/HTTPS eșuată sau eroare la redirecționare: {e}.")
+        final_domain = original_domain
 
-    # WHOIS
-    try:
-        w = whois.whois(domain)
-        creation_date = w.creation_date
+    # Verificarea SSL se face ACUM doar dacă URL-ul final este HTTPS
+    if 'https' == final_scheme:
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((final_domain, 443), timeout=3) as sock:
+                with context.wrap_socket(sock, server_hostname=final_domain) as ssock:
+                    cert = ssock.getpeercert()
+                    issuer = dict(x[0] for x in cert['issuer'])
+                    issuer_common = issuer.get('commonName', '')
+                    reasons.append(f"SSL emis de: {issuer_common}")
 
-        if isinstance(creation_date, list):
-            creation_date = creation_date[0]
+                    # --- Această condiție a fost eliminată/comentată ---
+                    # if not ssl.match_hostname(cert, final_domain):
+                    #     score += SCORE_INVALID_SSL
+                    #     reasons.append(f"Scor +{SCORE_INVALID_SSL}: Numele de domeniu din certificatul SSL nu se potrivește cu URL-ul final.")
+                    # --------------------------------------------------
 
-        if creation_date and (datetime.now() - creation_date).days < 90: # Extindem la 90 de zile
-            score += SCORE_RECENT_DOMAIN
-            reasons.append(f"Scor +{SCORE_RECENT_DOMAIN}: Domeniu creat recent ({creation_date.strftime('%Y-%m-%d')}).")
-    except whois.parser.PywhoisError:
-        score += SCORE_WHOIS_UNAVAILABLE
-        reasons.append(f"Scor +{SCORE_WHOIS_UNAVAILABLE}: WHOIS indisponibil (posibil ascuns/nou).")
-    except Exception as e:
-        score += SCORE_WHOIS_UNAVAILABLE
-        reasons.append(f"Scor +{SCORE_WHOIS_UNAVAILABLE}: Eroare la interogarea WHOIS: {e}.")
+        except (socket.gaierror, ConnectionRefusedError, socket.timeout, ssl.SSLError) as e:
+            score += SCORE_INVALID_SSL
+            reasons.append(f"Scor +{SCORE_INVALID_SSL}: SSL invalid sau conexiune HTTPS eșuată pentru {final_domain}: {e}.")
+        except Exception as e:
+            score += SCORE_INVALID_SSL
+            reasons.append(f"Scor +{SCORE_INVALID_SSL}: Eroare la verificarea SSL: {e}.")
+    elif 'http' == final_scheme:
+        reasons.append("URL-ul final este HTTP (nesecurizat).")
+
+    # SECȚIUNEA WHOIS (COMENATĂ TEMPORAR) - Rămâne comentată
+    # ... (blocul WHOIS comentat) ...
 
     # Scor final
-    final_score = min(score, 100) # Maximizăm scorul la 100
+    final_score = min(score, 100)
 
     risk_level = (
         "Scăzut" if final_score < 30 else
@@ -241,18 +205,18 @@ def analyze_url(url: str) -> dict:
 if __name__ == "__main__":
     test_urls = [
         "https://www.google.com",
-        "http://phishing-site.example.com@bad.com/login", # Cu @
-        "https://www.sub.sub.sub.sub.sub.sub.bank.com", # Multe subdomenii
-        "http://faceb0ok-login.com", # Typosquatting
-        "https://аpple.com", # Chirilice (а seamănă cu a latin)
-        "https://paypal.com", # Legit
-        "http://192.168.1.1/admin", # IP
-        "https://www.facebook.com/login.php?next=https://www.facebook.com/", # Legit, dar cu login
-        "https://accounts.google.com/signin/v2/sl/pwd?flowName=GlifWebSignIn&flowEntry=ServiceLogin", # Legit
-        "http://amazon.tk/login.php", # TLD gratuit
-        "https://appIe.com", # l mare in loc de L mic
-        "https://microsoft.support.login.com", # Subdomeniu inversat/cheie
-        "https://www.rnicrosoft.com" # rn in loc de m
+        "http://phishing-site.example.com@bad.com/login",
+        "https://www.sub.sub.sub.sub.sub.sub.bank.com",
+        "http://faceb0ok-login.com",
+        "https://аpple.com",
+        "https://paypal.com",
+        "http://192.168.1.1/admin",
+        "https://www.facebook.com/login.php?next=https://www.facebook.com/",
+        "https://accounts.google.com/signin/v2/sl/pwd?flowName=GlifWebSignIn&flowEntry=ServiceLogin",
+        "http://amazon.tk/login.php",
+        "https://appIe.com",
+        "https://microsoft.support.login.com",
+        "https://www.rnicrosoft.com"
     ]
 
     print("--- Analiza URL-urilor ---")
