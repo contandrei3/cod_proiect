@@ -2,7 +2,9 @@ import re
 from urllib.parse import urlparse
 import socket
 import ssl
+# import whois # Păstrăm comentat conform discuției anterioare
 from datetime import datetime
+import idna # Reintroducem idna
 from Levenshtein import distance as levenshtein_distance
 import requests
 
@@ -30,7 +32,7 @@ def analyze_url(url: str) -> dict:
     SCORE_INVALID_SSL = 20 # Acest scor va fi aplicat doar pentru erori de conexiune/certificat invalid
     SCORE_RECENT_DOMAIN = 20
     SCORE_WHOIS_UNAVAILABLE = 10
-    SCORE_NON_ASCII_CHARS = 40 # Noul scor pentru caractere non-ASCII (înlocuiește CYRILLIC_HOMOGRAPH)
+    SCORE_CYRILLIC_HOMOGRAPH = 40 # Reintroducem scorul pentru homograf chirilic/IDN
     SCORE_TYPOSQUATTING = 30
     SCORE_DOMAIN_SIMILARITY = 40
 
@@ -60,7 +62,7 @@ def analyze_url(url: str) -> dict:
     original_scheme = parsed.scheme
     full_url = url.lower()
 
-    # Extragem domeniul rădăcină al URL-ului analizat
+    # Extragem domeniul rădăcină al URL-ului analizat (fără Punycode inițial)
     domain_parts = original_domain.split('.')
     if len(domain_parts) >= 2:
         root_domain = '.'.join(domain_parts[-2:])
@@ -68,6 +70,8 @@ def analyze_url(url: str) -> dict:
         root_domain = original_domain
 
     # --- VERIFICARE CRITICĂ: URL-ul este un domeniu popular și cunoscut? ---
+    # Convertim domeniile populare în formatul root_domain pentru comparație
+    # și adăugăm și original_domain pentru potriviri exacte, inclusiv subdomenii specifice
     popular_root_domains_set = set()
     for pd in POPULAR_DOMAINS:
         pd_parts = pd.split('.')
@@ -76,6 +80,7 @@ def analyze_url(url: str) -> dict:
         popular_root_domains_set.add(pd) # Adăugăm și varianta completă pentru potriviri exacte de subdomeniu
 
     is_known_popular_domain = False
+    # Verificăm potrivirea exactă a domeniului original (nu decodat încă)
     if original_domain in popular_root_domains_set or root_domain in popular_root_domains_set:
         is_known_popular_domain = True
         reasons.append("Acesta este un domeniu cunoscut și popular. Nu se aplică penalizări de scor direct.")
@@ -107,17 +112,42 @@ def analyze_url(url: str) -> dict:
             score += SCORE_IP_ADDRESS
             reasons.append(f"Scor +{SCORE_IP_ADDRESS}: IP în loc de domeniu.")
 
-        # --- NOUA VERIFICARE: Caractere non-ASCII în domeniu ---
-        # Verifică dacă domeniul conține caractere care nu sunt în setul ASCII
-        if not all(ord(c) < 128 for c in original_domain):
-            score += SCORE_NON_ASCII_CHARS
-            reasons.append(f"Scor +{SCORE_NON_ASCII_CHARS}: Domeniul conține caractere non-ASCII (posibil homograf).")
-            # Deși nu mai decodăm cu IDNA, putem încă compara cu domenii populare dacă există similarități vizuale
-            # Această parte ar necesita o logică mai complexă pentru homografe vizuale fără IDNA
-            # De dragul simplității și cerinței de ASCII, am eliminat comparația directă aici.
-            # O abordare mai avansată ar putea folosi o listă de caractere "confuzabile".
+        # --- NOU: Verificarea caracterelor chirilice/internaționale folosind IDNA decode ---
+        decoded_domain_for_check = original_domain
+        try:
+            # Încercăm să decodăm numele de domeniu. Dacă e Punycode, se va decoda.
+            # Dacă sunt caractere non-ASCII directe (ex: "аpple.com"), idna.decode le va lăsa așa.
+            decoded_domain_for_check = idna.decode(original_domain)
+            
+            # Verificăm dacă domeniul decodat conține caractere non-ASCII (e.g., chirilice)
+            # Aceasta e noua logică pentru a prinde direct homografele vizuale
+            if any(ord(c) > 127 for c in decoded_domain_for_check):
+                score += SCORE_CYRILLIC_HOMOGRAPH
+                reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniul conține caractere non-ASCII/internaționale (posibil homograf).")
+
+                # Acum comparăm domeniul decodat cu domenii populare
+                for pop_dom_full in POPULAR_DOMAINS:
+                    pop_root_for_comparison = pop_dom_full.split('.')[-2] if len(pop_dom_full.split('.')) >= 2 else pop_dom_full
+                    # Comparăm cu root_domain-ul popular, dar și cu domeniul complet popular
+                    if levenshtein_distance(decoded_domain_for_check, pop_root_for_comparison) <= 2 or \
+                       levenshtein_distance(decoded_domain_for_check, pop_dom_full) <= 2:
+                        score += SCORE_DOMAIN_SIMILARITY
+                        reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
+                        break # O singură potrivire este suficientă
+
+        except idna.IDNAError:
+            # Aceasta înseamnă că domeniul este Punycode, dar nu este un IDN valid.
+            # Sau conține caractere non-ASCII care nu pot fi interpretate ca IDN.
+            # Îl tratăm ca suspect.
+            score += SCORE_CYRILLIC_HOMOGRAPH # Sau un scor dedicat pentru IDNA invalid
+            reasons.append(f"Scor +{SCORE_CYRILLIC_HOMOGRAPH}: Domeniu cu format IDN invalid sau caractere non-ASCII ce nu pot fi decodate.")
+        except Exception as e:
+            # Alte erori la decodare, le logăm/raportăm
+            reasons.append(f"Atenție: Eroare la decodarea IDN: {e}. Continuăm analiza.")
+
 
         # Verificări Typosquatting și similaritate Levenshtein
+        # Acestea se fac pe domeniul rădăcină, care ar trebui să fie ASCII (sau Punycode decodat)
         current_root_domain = domain_parts[-2] if len(domain_parts) >= 2 else original_domain
         
         for typo, correction in COMMON_TYPOS.items():
@@ -132,6 +162,8 @@ def analyze_url(url: str) -> dict:
                 if any("typosquatting" in r for r in reasons):
                     break
 
+        # Această verificare Levenshtein se aplică pe `current_root_domain` (care e de obicei Punycode sau ASCII)
+        # Comparatia cu `decoded_domain_for_check` se face deja mai sus
         for pop_dom_full in POPULAR_DOMAINS:
             pop_root = pop_dom_full.split('.')[-2] if len(pop_dom_full.split('.')) >= 2 else pop_dom_full
             if levenshtein_distance(current_root_domain, pop_root) <= 2 and current_root_domain != pop_root:
@@ -140,6 +172,9 @@ def analyze_url(url: str) -> dict:
                 break
 
     # --- Verificări de conectivitate și certificat (se aplică întotdeauna) ---
+    # Notă: Aici se folosește 'original_domain' pentru lookup DNS și SSL,
+    # deoarece acestea funcționează de obicei cu numele de domeniu așa cum este (chiar și Punycode).
+    # Sistemele DNS și SSL sunt concepute pentru a gestiona IDN-uri convertite în Punycode.
 
     # DNS Lookup
     try:
@@ -155,10 +190,11 @@ def analyze_url(url: str) -> dict:
     # Gestionarea redirecționărilor și apoi verificarea SSL
     final_url = url
     try:
+        # Folosim URL-ul original pentru request, deoarece requests va gestiona Punycode intern
         response = requests.head(url, allow_redirects=True, timeout=5)
         final_url = response.url
         final_parsed = urlparse(final_url.lower())
-        final_domain = final_parsed.netloc
+        final_domain = final_parsed.netloc # Acesta poate fi deja Punycode dacă așa a fost redirecționat
         final_scheme = final_parsed.scheme
 
         if original_scheme == 'http' and final_scheme == 'https':
@@ -171,12 +207,13 @@ def analyze_url(url: str) -> dict:
     except requests.exceptions.RequestException as e:
         score += SCORE_INVALID_SSL
         reasons.append(f"Scor +{SCORE_INVALID_SSL}: Conexiune HTTP/HTTPS eșuată sau eroare la redirecționare: {e}.")
-        final_domain = original_domain
+        final_domain = original_domain # Folosim domeniul original dacă redirecționarea a eșuat
 
     # Verificarea SSL se face ACUM doar dacă URL-ul final este HTTPS
     if 'https' == final_scheme:
         try:
             context = ssl.create_default_context()
+            # Conexiunea SSL ar trebui să folosească domeniul exact (Punycode dacă e cazul)
             with socket.create_connection((final_domain, 443), timeout=3) as sock:
                 with context.wrap_socket(sock, server_hostname=final_domain) as ssock:
                     cert = ssock.getpeercert()
@@ -208,7 +245,7 @@ def analyze_url(url: str) -> dict:
     )
 
     return {
-        "url": url,
+        "url": url, # Returnăm URL-ul original
         "scor": final_score,
         "nivel_risc": risk_level,
         "detalii": reasons
@@ -217,22 +254,23 @@ def analyze_url(url: str) -> dict:
 # Exemplu de utilizare:
 if __name__ == "__main__":
     test_urls = [
-        "https://www.google.com",                 # Ar trebui să aibă scor scăzut (sau 0)
-        "http://phishing-site.example.com@bad.com/login", # Ar trebui să aibă scor
-        "https://www.sub.sub.sub.sub.sub.sub.bank.com", # Ar trebui să aibă scor
-        "http://faceb0ok-login.com",              # Ar trebui să aibă scor
-        "https://аpple.com",                      # Test cu caracter chirilic 'а' (non-ASCII)
-        "https://paypal.com",                     # Ar trebui să aibă scor scăzut (sau 0)
-        "http://192.168.1.1/admin",               # Ar trebui să aibă scor
-        "https://www.facebook.com/login.php?next=https://www.facebook.com/", # Ar trebui să aibă scor scăzut
-        "https://accounts.google.com/signin/v2/sl/pwd?flowName=GlifWebSignIn&flowEntry=ServiceLogin", # Scorul scăzut
-        "http://amazon.tk/login.php",             # Ar trebui să aibă scor (TLD gratuit + cuvânt cheie)
-        "https://appIe.com",                      # Ar trebui să aibă scor (typosquatting)
-        "https://microsoft.support.login.com",    # Ar trebui să aibă scor
-        "https://www.rnicrosoft.com",             # Ar trebui să aibă scor (typosquatting)
-        "http://valid-site.com",                  # Exemplu de site HTTP valid
-        "https://google.com/login",               # Scorul scăzut, chiar dacă are 'login'
-        "https://xn--pple-43da.com"              # Punycode pentru аpple.com (acum va fi penalizat pentru non-ASCII după decodare)
+        "https://www.google.com",
+        "http://phishing-site.example.com@bad.com/login",
+        "https://www.sub.sub.sub.sub.sub.sub.bank.com",
+        "http://faceb0ok-login.com",
+        "https://аpple.com",                      # URL cu caracter chirilic (a mic)
+        "https://paypal.com",
+        "http://192.168.1.1/admin",
+        "https://www.facebook.com/login.php?next=https://www.facebook.com/",
+        "https://accounts.google.com/signin/v2/sl/pwd?flowName=GlifWebSignIn&flowEntry=ServiceLogin",
+        "http://amazon.tk/login.php",
+        "https://appIe.com",
+        "https://microsoft.support.login.com",
+        "https://www.rnicrosoft.com",
+        "http://valid-site.com",
+        "https://google.com/login",
+        "https://xn--pple-43da.com",              # Punycode pentru аpple.com
+        "https://www.bank-of-america.com"         # Exemplu de domeniu legitim cu cratimă
     ]
 
     print("--- Analiza URL-urilor ---")
