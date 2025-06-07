@@ -198,11 +198,10 @@ def analyze_url(url: str) -> dict:
                     else:
                         pop_main_part = pop_dom_full # Fallback pentru TLD-uri simple sau domenii fără puncte
 
-                    # --- NOUA LOGICĂ: NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
-                    # Asigurăm că nu este același domeniu și că main_domain_part este suficient de lungă
+                    # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                     if decoded_domain_for_check != pop_dom_full and \
                        len(pop_main_part) > 3 and \
-                       levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 2:
+                       levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 1: # Schimbat de la <= 2 la <= 1
                         score += SCORE_DOMAIN_SIMILARITY
                         reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
                         break # O singură potrivire este suficientă
@@ -242,9 +241,9 @@ def analyze_url(url: str) -> dict:
                         else:
                             pop_main_domain = pop_dom_full # Fallback
                         
-                        # --- NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
+                        # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                         if temp_main_domain != pop_main_domain and \
-                           levenshtein_distance(temp_main_domain, pop_main_domain) <= 1:
+                           levenshtein_distance(temp_main_domain, pop_main_domain) <= 1: # Rămâne <= 1
                             score += SCORE_TYPOSQUATTING
                             reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_main_domain_part}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
                             break # O singură potrivire este suficientă
@@ -264,9 +263,9 @@ def analyze_url(url: str) -> dict:
                 else:
                     pop_main_domain = pop_dom_full
 
-                # --- NU se compară cu el însuși ȘI lungimea main_domain_part trebuie să fie > 3 ---
+                # --- MODIFICARE AICI: Levenshtein <= 1 pentru o singură modificare ---
                 if current_main_domain_part != pop_main_domain and \
-                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 2:
+                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 1: # Schimbat de la <= 2 la <= 1
                     score += SCORE_DOMAIN_SIMILARITY
                     reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_main_domain_part}' seamănă foarte bine cu '{pop_dom_full}'.")
                     break # O singură potrivire este suficientă
@@ -347,6 +346,7 @@ if __name__ == "__main__":
         "https://brd.ro",                  # Ar trebui să aibă scor scăzut
         "https://aapl.com",                # Domeniu scurt, similaritate nu ar trebui să se aplice
         "https://abc.com",                 # Domeniu scurt, similaritate nu ar trebui să se aplice
+        "https://emag.com",                # Acum nu ar trebui să mai semene cu ebay.com
         "http://phishing-site.example.com@bad.com/login",
         "https://www.sub.sub.sub.sub.sub.sub.bank.com",
         "http://faceb0ok-login.com",
