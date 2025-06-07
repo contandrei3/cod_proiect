@@ -1,4 +1,5 @@
-flask
+Flask
 flask-cors
 gunicorn
-python-whois
+idna
+python-Levenshtein
