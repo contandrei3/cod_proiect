@@ -32,8 +32,8 @@ def analyze_url(url: str) -> dict:
     SCORE_RECENT_DOMAIN = 20
     SCORE_WHOIS_UNAVAILABLE = 10
     SCORE_CYRILLIC_HOMOGRAPH = 40 # Reintroducem scorul pentru homograf chirilic/IDN
-    SCORE_TYPOSQUATTING = 30
-    SCORE_DOMAIN_SIMILARITY = 40
+    SCORE_TYPOSQUATTING_GENERAL = 30 # Schimbat pentru a diferentia de similaritatea TLD
+    SCORE_DOMAIN_SIMILARITY_TLD_MISMATCH = 50 # Scor mai mare pentru diferențe de TLD pe nume identice
 
     # Liste predefinite
     FREE_TLDS = {'.tk', '.ml', '.ga', '.cf', '.gq'}
@@ -201,8 +201,8 @@ def analyze_url(url: str) -> dict:
                     if decoded_domain_for_check != pop_dom_full and \
                        len(pop_main_part) > 3 and \
                        levenshtein_distance(decoded_domain_for_check, pop_main_part) <= 1:
-                        score += SCORE_DOMAIN_SIMILARITY
-                        reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
+                        score += SCORE_TYPOSQUATTING_GENERAL
+                        reasons.append(f"Scor +{SCORE_TYPOSQUATTING_GENERAL}: Domeniul decodat ('{decoded_domain_for_check}') seamănă foarte bine cu '{pop_dom_full}'.")
                         break # O singură potrivire este suficientă
 
         except idna.IDNAError:
@@ -242,8 +242,8 @@ def analyze_url(url: str) -> dict:
                         
                         if temp_main_domain != pop_main_domain and \
                            levenshtein_distance(temp_main_domain, pop_main_domain) <= 1:
-                            score += SCORE_TYPOSQUATTING
-                            reasons.append(f"Scor +{SCORE_TYPOSQUATTING}: Posibil typosquatting: '{typo}' în '{current_main_domain_part}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
+                            score += SCORE_TYPOSQUATTING_GENERAL
+                            reasons.append(f"Scor +{SCORE_TYPOSQUATTING_GENERAL}: Posibil typosquatting: '{typo}' în '{current_main_domain_part}' ar putea fi '{correction}' (similar cu '{pop_dom_full}').")
                             break # O singură potrivire este suficientă
                     if any("typosquatting" in r for r in reasons):
                         break
@@ -254,18 +254,33 @@ def analyze_url(url: str) -> dict:
         if len(current_main_domain_part) > 3:
             for pop_dom_full in POPULAR_DOMAINS:
                 pop_main_parts = pop_dom_full.split('.')
+                # Asigurăm că extragem corect root_domain și main_domain_part pentru domeniul popular
                 if len(pop_main_parts) >= 3 and pop_main_parts[-2] in ['co', 'com', 'org', 'net', 'gov', 'edu', 'mil'] and len(pop_main_parts[-1]) == 2:
+                    pop_root_domain = '.'.join(pop_main_parts[-3:])
                     pop_main_domain = pop_main_parts[-3]
                 elif len(pop_main_parts) >= 2:
+                    pop_root_domain = '.'.join(pop_main_parts[-2:])
                     pop_main_domain = pop_main_parts[-2]
                 else:
+                    pop_root_domain = pop_dom_full
                     pop_main_domain = pop_dom_full
 
+                # 1. Penalizare pentru nume de domeniu principale identice cu TLD diferit
+                if current_main_domain_part == pop_main_domain and current_root_domain != pop_root_domain:
+                    # ex: emag.com vs emag.ro, bcr.com vs bcr.ro
+                    score += SCORE_DOMAIN_SIMILARITY_TLD_MISMATCH # Scor mai mare, deoarece e foarte înșelător
+                    reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY_TLD_MISMATCH}: Nume de domeniu '{current_main_domain_part}' identic, dar TLD diferit de '{pop_root_domain}' (comparativ cu '{current_root_domain}'). Foarte suspect!")
+                    # Nu punem break aici, pentru că vrem să prindem și alte similarități dacă există
+
+                # 2. Penalizare pentru typosquatting general (diferență Levenshtein > 0)
+                # Acesta ar trebui să prindă "instagrarn" vs "instagram"
                 if current_main_domain_part != pop_main_domain and \
-                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 1:
-                    score += SCORE_DOMAIN_SIMILARITY
-                    reasons.append(f"Scor +{SCORE_DOMAIN_SIMILARITY}: Domeniul '{current_main_domain_part}' seamănă foarte bine cu '{pop_dom_full}'.")
-                    break # O singură potrivire este suficientă
+                   levenshtein_distance(current_main_domain_part, pop_main_domain) <= 2: # Am crescut pragul la 2
+                    score += SCORE_TYPOSQUATTING_GENERAL
+                    reasons.append(f"Scor +{SCORE_TYPOSQUATTING_GENERAL}: Domeniul '{current_main_domain_part}' seamănă foarte bine cu '{pop_main_domain}' (ex: '{pop_dom_full}'). Posibil typosquatting.")
+                    # Punem break aici, o singură potrivire de acest tip e suficientă
+                    break
+
 
     # --- Verificări de conectivitate și certificat (se aplică întotdeauna) ---
     try:
